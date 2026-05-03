@@ -20,10 +20,33 @@ on:
         description: 'Dockerfile path'
         required: false
         type: string
+      dispatch_enabled:
+        description: 'Enable repository dispatch for PR creation'
+        required: false
+        type: boolean
+        default: true
+      dispatch_repository:
+        description: 'Target repository for dispatch (owner/repo)'
+        required: false
+        type: string
+        default: 'chao7150/sakura2-iac'
     secrets:
       aws_role_to_assume:
         description: 'AWS IAM Role ARN to assume'
         required: true
+      dispatch_token:
+        description: 'PAT for repository dispatch'
+        required: false
+    outputs:
+      registry:
+        description: 'ECR registry URL'
+        value: ${{ jobs.ecr-push.outputs.registry }}
+      image_tag:
+        description: 'Image tag (date_sha)'
+        value: ${{ jobs.ecr-push.outputs.image_tag }}
+      digest:
+        description: 'Image digest'
+        value: ${{ jobs.ecr-push.outputs.digest }}
 
 jobs:
   ecr-push:
@@ -35,6 +58,7 @@ jobs:
     outputs:
       registry: ${{ steps.login-ecr.outputs.registry }}
       image_tag: ${{ env.DATE }}_${{ github.sha }}
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: Mask Role ARN
@@ -60,6 +84,7 @@ jobs:
         run: echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.docker_context }}
@@ -68,3 +93,19 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ env.DATE }}_${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:latest
+
+      - name: Dispatch update event
+        if: inputs.dispatch_enabled == true
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.dispatch_token }}
+          repository: ${{ inputs.dispatch_repository }}
+          event-type: ecr-image-pushed
+          client-payload: |
+            {
+              "registry": "${{ steps.login-ecr.outputs.registry }}",
+              "ecr_repository": "${{ inputs.ecr_repository }}",
+              "tag": "${{ env.DATE }}_${{ github.sha }}",
+              "digest": "${{ steps.build.outputs.digest }}",
+              "source_repo": "${{ github.repository }}"
+            }
